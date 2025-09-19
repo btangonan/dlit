@@ -3,11 +3,22 @@ services:
     name: video-downloader
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: |
+      # Install yt-dlp binary
+      pip install yt-dlp
+
+      # Install dependencies and build
+      npm install
+      npm run build
+
     startCommand: npm start
     envVars:
       - key: JWT_SECRET
         generateValue: true
       - key: NODE_ENV
         value: production
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
     healthCheckPath: /api/health

@@ -27,24 +27,27 @@ export interface VideoFormat {
 }
 
 async function getYtdlpPath(): Promise<string> {
-  // Try different locations for yt-dlp
+  // Try different locations for yt-dlp - production environment first
   const paths = [
-    path.join(process.cwd(), 'node_modules/youtube-dl-exec/bin/yt-dlp'),
-    '/opt/homebrew/bin/yt-dlp',
-    '/usr/local/bin/yt-dlp',
-    'yt-dlp'
+    '/usr/local/bin/yt-dlp',  // Render production path
+    '/usr/bin/yt-dlp',        // Standard Linux path
+    'yt-dlp',                 // System PATH
+    path.join(process.cwd(), 'node_modules/youtube-dl-exec/bin/yt-dlp'), // npm package
+    '/opt/homebrew/bin/yt-dlp' // macOS homebrew
   ];
 
   for (const ytdlpPath of paths) {
     try {
       await execAsync(`"${ytdlpPath}" --version`);
+      console.log(`✅ Found yt-dlp at: ${ytdlpPath}`);
       return ytdlpPath;
     } catch (e) {
+      console.log(`❌ yt-dlp not found at: ${ytdlpPath}`);
       continue;
     }
   }
 
-  throw new Error('yt-dlp not found. Please install it: brew install yt-dlp');
+  throw new Error('yt-dlp not found in production environment. Binary installation may have failed.');
 }
 
 export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
@@ -147,6 +150,18 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     return videoInfo;
   } catch (error: any) {
     console.error('Error extracting video info:', error.message);
-    throw new Error(`Failed to extract video information. The video may be private or unavailable: ${error.message}`);
+
+    // Enhanced error messages for production debugging
+    if (error.message.includes('yt-dlp not found')) {
+      throw new Error('Video extraction service unavailable: yt-dlp binary not installed');
+    } else if (error.message.includes('timeout')) {
+      throw new Error('Video extraction timeout: The video may be too large or service busy');
+    } else if (error.message.includes('ENOTFOUND') || error.message.includes('network')) {
+      throw new Error('Network error: Unable to connect to video service');
+    } else if (error.message.includes('Invalid JSON')) {
+      throw new Error('Video processing error: Invalid response from extraction service');
+    } else {
+      throw new Error(`Failed to extract video information. The video may be private or unavailable.`);
+    }
   }
 }
