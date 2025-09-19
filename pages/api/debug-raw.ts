@@ -45,9 +45,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const ytdlpPath = await getYtdlpPath();
     console.log('🐛 DEBUG-RAW: Using yt-dlp at:', ytdlpPath);
 
-    // Test with raw yt-dlp command to capture exact error
+    // Test with raw yt-dlp command with bot detection evasion to capture exact error
     const { stdout, stderr } = await execAsync(
-      `"${ytdlpPath}" -j --no-warnings "${url}"`,
+      `"${ytdlpPath}" -j --no-warnings ` +
+      `--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" ` +
+      `--add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" ` +
+      `--add-header "Accept-Language:en-US,en;q=0.9" ` +
+      `--add-header "Accept-Encoding:gzip, deflate, br" ` +
+      `--add-header "DNT:1" ` +
+      `--add-header "Connection:keep-alive" ` +
+      `--add-header "Upgrade-Insecure-Requests:1" ` +
+      `"${url}"`,
       {
         maxBuffer: 1024 * 1024 * 10,
         timeout: 45000

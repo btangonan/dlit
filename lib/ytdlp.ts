@@ -58,12 +58,20 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
   try {
     const ytdlpPath = await getYtdlpPath();
 
-    // Execute yt-dlp to get video info
+    // Execute yt-dlp to get video info with bot detection evasion
     const { stdout, stderr } = await execAsync(
-      `"${ytdlpPath}" -j --no-warnings "${videoUrl}"`,
+      `"${ytdlpPath}" -j --no-warnings ` +
+      `--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" ` +
+      `--add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" ` +
+      `--add-header "Accept-Language:en-US,en;q=0.9" ` +
+      `--add-header "Accept-Encoding:gzip, deflate, br" ` +
+      `--add-header "DNT:1" ` +
+      `--add-header "Connection:keep-alive" ` +
+      `--add-header "Upgrade-Insecure-Requests:1" ` +
+      `"${videoUrl}"`,
       {
         maxBuffer: 1024 * 1024 * 10, // 10MB buffer
-        timeout: 30000 // 30 seconds timeout
+        timeout: 45000 // Increased to 45 seconds for bot evasion
       }
     );
 
