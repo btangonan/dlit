@@ -98,23 +98,44 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
       console.log(`⚠️ Could not get yt-dlp version from ${ytdlpPath}`);
     }
 
-    // Try minimal extraction first (works for most videos)
+    // Try multiple extraction strategies for production bot resistance
     let stdout, stderr;
+    let extractionSuccessful = false;
+
+    // Strategy 1: Try Android client first (often bypasses bot detection)
     try {
+      console.log('🤖 Trying Android client extraction...');
       const result = await execAsync(
-        `"${ytdlpPath}" -j --no-warnings "${videoUrl}"`,
+        `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=android" "${videoUrl}"`,
         {
-          maxBuffer: 1024 * 1024 * 50, // 50MB buffer for large JSON
+          maxBuffer: 1024 * 1024 * 50,
           timeout: 30000
         }
       );
       stdout = result.stdout;
       stderr = result.stderr;
-      console.log('✅ Minimal extraction successful');
-    } catch (minimalError: any) {
-      // If we get bot detection error, try with targeted evasion
-      if (minimalError.stderr && minimalError.stderr.includes('Sign in to confirm you\'re not a bot')) {
-        console.log('🤖 Bot detection detected, trying cookie authentication...');
+      extractionSuccessful = true;
+      console.log('✅ Android client extraction successful');
+    } catch (androidError: any) {
+      console.log('📱 Android client failed, trying minimal extraction...');
+
+      // Strategy 2: Fallback to minimal extraction
+      try {
+        const result = await execAsync(
+          `"${ytdlpPath}" -j --no-warnings "${videoUrl}"`,
+          {
+            maxBuffer: 1024 * 1024 * 50,
+            timeout: 30000
+          }
+        );
+        stdout = result.stdout;
+        stderr = result.stderr;
+        extractionSuccessful = true;
+        console.log('✅ Minimal extraction successful');
+      } catch (minimalError: any) {
+        // Strategy 3: If we get bot detection error, try with targeted evasion
+        if (minimalError.stderr && minimalError.stderr.includes('Sign in to confirm you\'re not a bot')) {
+          console.log('🤖 Bot detection detected, trying cookie authentication...');
 
         // Try with cookies first
         const cookieFile = await ensureCookieFile();
@@ -191,6 +212,7 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
       } else {
         // Re-throw if not bot detection
         throw minimalError;
+      }
       }
     }
 

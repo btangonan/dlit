@@ -45,8 +45,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           exists: !!stats,
           executable: stats ? (stats.mode & 0o111) !== 0 : false,
           size: stats?.size || 0,
-          version: versionResult.error ? versionResult.error : versionResult.stdout?.trim(),
-          accessible: !versionResult.error
+          version: 'error' in versionResult ? versionResult.error : versionResult.stdout?.trim(),
+          accessible: !('error' in versionResult)
         };
       } catch (e) {
         diagnostics.binary[ytdlpPath] = { error: e.message };
@@ -56,7 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Test 2: Working Binary Path Detection
     let workingBinary = null;
     for (const [path, info] of Object.entries(diagnostics.binary)) {
-      if (info.accessible && !info.error) {
+      if ((info as any).accessible && !(info as any).error) {
         workingBinary = path;
         break;
       }
