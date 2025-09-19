@@ -4,13 +4,13 @@
 
 **Problem**: Web-based video downloaders face 50% failure rates due to YouTube's datacenter IP blocking. Proxy solutions cost $10-50/month with uncertain reliability.
 
-**Solution**: Desktop application runs on user's residential IP, achieving 100% success rate with zero infrastructure costs.
+**Solution**: Desktop application runs on user's residential IP, achieving higher success rates with reduced infrastructure dependency.
 
 **Key Metrics**:
-- Success Rate: 50% → 100%
-- Monthly Cost: $10-50 → $0
-- Latency: 500ms (server roundtrip) → 50ms (local)
-- User Trust: Low (web) → High (installed app)
+- Success Rate: Source-dependent SLOs (see Error Taxonomy)
+- Monthly Cost: $10-50 → $10 (licensing/analytics only)
+- Latency: P95 < 4s extraction (vs 8s+ web roundtrip)
+- User Trust: Enhanced through local execution and privacy controls
 
 ## Architecture Decisions
 
@@ -29,15 +29,167 @@
 - Native: 3x development time, separate codebases
 - PWA: Cannot execute local binaries
 
+## Error Taxonomy & Success SLOs
+
+| Source | Expected Success Rate | Common Failures | User Message |
+|--------|----------------------|-----------------|-------------|
+| YouTube (public) | 95% | Age-restricted, geo-blocked | "Video requires sign-in or unavailable in your region" |
+| YouTube (private) | 85% | Authentication required | "Private video - cannot download without account access" |
+| YouTube (live) | 70% | Stream not started/ended | "Live stream not available for download yet" |
+| Vimeo | 90% | Privacy settings | "Video owner has disabled downloads" |
+| Instagram | 80% | Login walls, stories | "Instagram content may require account access" |
+| TikTok | 85% | Region blocking | "TikTok video not available in your region" |
+| Generic | 75% | Various protocols | "Download failed - please try a different quality" |
+
+**Baseline Commitment**: 85% overall success rate across all supported sources, with graceful degradation and clear user feedback for failures.
+
+## Privacy & Consent Framework
+
+### First-Run Privacy Setup
+```typescript
+// electron/services/privacy.ts (120 LOC)
+export class PrivacyService {
+  async showFirstRunConsent(): Promise<ConsentResult> {
+    const dialog = new BrowserWindow({
+      width: 600,
+      height: 500,
+      modal: true,
+      resizable: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    });
+
+    // Load privacy consent form
+    await dialog.loadFile('privacy-consent.html');
+
+    return new Promise(resolve => {
+      dialog.webContents.on('ipc-message', (event, channel, data) => {
+        if (channel === 'privacy-consent') {
+          this.saveConsentChoices(data);
+          resolve(data);
+          dialog.close();
+        }
+      });
+    });
+  }
+
+  private async saveConsentChoices(choices: ConsentChoices): Promise<void> {
+    await this.store.set('privacy.analytics', choices.analytics);
+    await this.store.set('privacy.crashReports', choices.crashReports);
+    await this.store.set('privacy.usageStats', choices.usageStats);
+
+    logger.info('privacy.consent_saved', {
+      analytics: choices.analytics,
+      crashReports: choices.crashReports,
+      usageStats: choices.usageStats,
+      timestamp: Date.now()
+    });
+  }
+}
+```
+
+### Safe Mode Build
+```typescript
+// electron/config/safe-mode.ts
+export const SAFE_MODE_CONFIG = {
+  analytics: {
+    enabled: false,
+    reason: 'Safe Mode - No analytics'
+  },
+  crashReporting: {
+    enabled: false,
+    reason: 'Safe Mode - No crash reports'
+  },
+  autoUpdate: {
+    enabled: false,
+    reason: 'Safe Mode - Manual updates only'
+  },
+  networkAccess: {
+    restricted: true,
+    allowedDomains: ['github.com'], // yt-dlp updates only
+    reason: 'Safe Mode - Minimal network access'
+  }
+};
+```
+
+## Terms of Service & Compliance
+
+### Legal Framework
+1. **Jurisdiction**: Delaware incorporation for legal clarity
+2. **DMCA Compliance**: Safe harbor provisions, takedown procedures
+3. **GDPR Compliance**: EU data protection rights, data retention policies
+4. **CCPA Compliance**: California privacy rights, opt-out mechanisms
+5. **Age Verification**: 13+ age requirement, parental consent for minors
+
+### Content Policy
+```typescript
+// lib/content-policy.ts (60 LOC)
+export class ContentPolicy {
+  private readonly BLOCKED_PATTERNS = [
+    /copyrighted.*material/i,
+    /educational.*use.*only/i,
+    /terms.*of.*service/i
+  ];
+
+  async validateContent(metadata: VideoMetadata): Promise<ValidationResult> {
+    // Check for copyright indicators
+    if (this.hasContentWarnings(metadata)) {
+      return {
+        allowed: false,
+        reason: 'Content may be copyrighted - please verify download rights',
+        userMessage: 'This video may have download restrictions. Proceed only if you have permission.'
+      };
+    }
+
+    // Check age restrictions
+    if (metadata.ageRestricted) {
+      return {
+        allowed: true,
+        warning: 'Age-restricted content - ensure compliance with local laws'
+      };
+    }
+
+    return { allowed: true };
+  }
+}
+```
+
+### Data Retention Policy
+```yaml
+retention_schedule:
+  download_history:
+    retention: 90_days
+    cleanup: automatic
+    user_control: deletable
+
+  analytics_data:
+    retention: 30_days
+    cleanup: automatic
+    anonymization: immediate
+
+  crash_reports:
+    retention: 14_days
+    cleanup: automatic
+    user_control: opt_out
+
+  user_preferences:
+    retention: indefinite
+    cleanup: user_initiated
+    export: available
+```
+
 ## Performance Budgets
 
 ```typescript
 const BUDGETS = {
-  startup: { cold: 2000, warm: 500 }, // ms
-  memory: { idle: 80, active: 150 }, // MB
-  cpu: { idle: 1, extraction: 15 }, // %
-  bundleSize: { main: 50, renderer: 200 }, // KB
-  downloadThroughput: 10, // MB/s minimum
+  startup: { cold: 3000, warm: 800 }, // ms (P95)
+  memory: { idle: 120, active: 200 }, // MB (P95)
+  cpu: { idle: 2, extraction: 25 }, // % (P95)
+  bundleSize: { main: 80, renderer: 300 }, // KB
+  extractionTime: { p50: 2000, p95: 4000 }, // ms
+  downloadThroughput: 5, // MB/s minimum (varies by source)
 };
 ```
 
@@ -46,8 +198,64 @@ const BUDGETS = {
 1. **No Remote Code Execution**: All binaries signed and verified
 2. **Sandboxed Renderer**: contextIsolation: true, nodeIntegration: false
 3. **Input Validation**: Zod schemas for all IPC messages
-4. **No Analytics Without Consent**: Explicit opt-in required
-5. **Auto-update Security**: Code signing certificates required
+4. **IPC Allowlisting**: Explicit channel registration, no wildcards
+5. **Content Security Policy**: Strict CSP preventing remote scripts
+6. **Privacy by Design**: No analytics without explicit consent
+7. **Auto-update Security**: Code signing certificates required
+8. **Safe Mode**: Privacy-first build variant for sensitive users
+
+### IPC Security Controls
+```typescript
+// electron/security/ipc-allowlist.ts (40 LOC)
+export const IPC_CHANNELS = {
+  // Extraction operations
+  'video:extract': { direction: 'bidirectional', validation: ExtractVideoSchema },
+  'video:download': { direction: 'bidirectional', validation: DownloadVideoSchema },
+  'video:cancel': { direction: 'main-to-renderer', validation: CancelSchema },
+
+  // App lifecycle
+  'app:ready': { direction: 'renderer-to-main', validation: null },
+  'app:quit': { direction: 'renderer-to-main', validation: null },
+
+  // Settings
+  'settings:get': { direction: 'bidirectional', validation: null },
+  'settings:set': { direction: 'bidirectional', validation: SettingsSchema },
+} as const;
+
+export function validateIpcChannel(channel: string): boolean {
+  return channel in IPC_CHANNELS;
+}
+```
+
+### Content Security Policy
+```typescript
+// electron/security/csp.ts
+export const CSP_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'", // React dev only
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https:",
+  "connect-src 'self'",
+  "font-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'"
+].join('; ');
+
+// Applied in window creation
+export function createSecureWindow(options: BrowserWindowConstructorOptions) {
+  return new BrowserWindow({
+    ...options,
+    webPreferences: {
+      ...options.webPreferences,
+      contextIsolation: true,
+      nodeIntegration: false,
+      enableRemoteModule: false,
+      additionalArguments: [`--csp=${CSP_POLICY}`]
+    }
+  });
+}
+```
 
 ## Phase 0: Foundation (v0.1.0)
 
@@ -177,7 +385,51 @@ export async function handleExtract(
 }
 ```
 
-### Slice 0.3: React Integration
+### Slice 0.3: Privacy Consent Flow
+**User Story**: As a user, I'm asked for privacy preferences on first run.
+
+```typescript
+// electron/windows/privacy-consent.ts (80 LOC)
+export class PrivacyConsentWindow {
+  private window: BrowserWindow | null = null;
+
+  async show(): Promise<ConsentChoices> {
+    this.window = createSecureWindow({
+      width: 600,
+      height: 500,
+      modal: true,
+      resizable: false,
+      title: 'Privacy Settings - DLIT'
+    });
+
+    await this.window.loadFile('privacy-consent.html');
+
+    return new Promise((resolve) => {
+      ipcMain.once('privacy-consent:submit', (event, choices) => {
+        this.saveChoices(choices);
+        resolve(choices);
+        this.window?.close();
+      });
+    });
+  }
+
+  private async saveChoices(choices: ConsentChoices): Promise<void> {
+    await store.set('privacy.consentGiven', true);
+    await store.set('privacy.analytics', choices.analytics);
+    await store.set('privacy.crashReports', choices.crashReports);
+
+    logger.info('privacy.consent_recorded', {
+      analytics: choices.analytics,
+      crashReports: choices.crashReports,
+      timestamp: Date.now()
+    });
+  }
+}
+```
+
+**Feature Flag**: `FEAT_PRIVACY_CONSENT=1`
+
+### Slice 0.4: React Integration
 **User Story**: As a developer, I can see the React app running inside Electron.
 
 - Copy existing React components (reuse 90%)
@@ -235,7 +487,8 @@ export class YtdlpService {
 }
 ```
 
-**Performance**: Must complete in <5s for 1080p video
+**Performance**: P50 < 2s, P95 < 4s for metadata extraction
+**Success SLO**: 85% overall, per-source targets in Error Taxonomy
 **Feature Flag**: `FEAT_YTDLP_EXTRACT=1`
 
 ### Slice 1.2: Download Management
@@ -762,10 +1015,10 @@ export async function getHealth(): Promise<HealthStatus> {
 - [ ] IPC communication working
 
 ### Phase 1 (Core)
-- [ ] 100% extraction success rate
-- [ ] Download speed >5MB/s
-- [ ] Progress tracking accurate
-- [ ] Error handling graceful
+- [ ] Source-specific SLOs met (see Error Taxonomy)
+- [ ] Download speed >3MB/s (varies by source)
+- [ ] Progress tracking accurate within 5%
+- [ ] Error handling with user-friendly messages
 
 ### Phase 2 (Polish)
 - [ ] Auto-retry reduces failures by 80%
@@ -799,48 +1052,65 @@ export async function getHealth(): Promise<HealthStatus> {
 - License API: $10/month (Cloudflare Worker)
 - **Total: $10/month**
 
-### Revenue Projections
-- Free users: 10,000 (marketing/reputation)
-- Conversion rate: 2%
-- Premium users: 200 @ $10 = $2,000/month
-- **Profit: $1,990/month**
+### Revenue Projections (Conservative)
+- Free users: 5,000 (organic growth)
+- Conversion rate: 0.5-1% (industry baseline)
+- Premium users: 25-50 @ $10 = $250-500/month
+- **Profit: $240-490/month** (after costs)
 
-## Timeline
+## Timeline (3.5-4.5 weeks with buffer)
 
 ### Week 1: Foundation
-- Day 1-2: Electron shell, IPC
-- Day 3-4: React integration
-- Day 5: Testing, documentation
+- Day 1-2: Electron shell, IPC security
+- Day 3: Privacy consent flow
+- Day 4-5: React integration, testing
 
 ### Week 2: Core Features
 - Day 1-2: yt-dlp integration
 - Day 3-4: Download management
-- Day 5: Progress tracking
+- Day 5: Progress tracking, error handling
 
 ### Week 3: Polish & Distribution
 - Day 1-2: Error recovery, history
 - Day 3-4: Auto-updater, installers
-- Day 5: Beta release
+- Day 5: Beta release, Safe Mode build
 
-### Week 4: Monetization
+### Week 4: Monetization & Compliance
 - Day 1-2: License system
-- Day 3-4: Premium features
-- Day 5: v1.0 release
+- Day 3-4: TOS compliance, content policy
+- Day 5-7: Testing buffer
+
+### Week 4.5 (Optional): Final Polish
+- Day 1-3.5: Bug fixes, performance tuning
+- Final: v1.0 release
 
 ## Risk Mitigation
 
 | Risk | Probability | Impact | Mitigation |
 |------|------------|--------|------------|
-| yt-dlp breaks | High | High | Auto-update, fallback versions |
-| Platform restrictions | Medium | High | Notarization, signing |
+| yt-dlp breaks | High | High | Auto-update, fallback versions, source rotation |
+| Platform restrictions | Medium | High | Notarization, signing, compliance review |
+| DMCA takedowns | Medium | Medium | Content policy, safe harbor provisions |
+| Privacy regulations | Low | High | Privacy-by-design, consent flows, Safe Mode |
+| Source API changes | High | Medium | Adaptive extraction, graceful degradation |
 | Memory leaks | Low | Medium | Monitoring, auto-restart |
-| License bypass | Medium | Low | Server validation, HWID |
-| Competition | High | Medium | Faster updates, better UX |
+| License bypass | Medium | Low | Server validation, HWID, usage analytics |
+| Competition | High | Medium | Faster updates, better UX, community building |
 
 ## Conclusion
 
-This desktop app pivot solves the fundamental bot detection problem while reducing operational complexity and costs. By following the iterative loop methodology with small, reversible slices, we can ship a robust solution in 4 weeks that provides 100% success rate at zero infrastructure cost.
+This desktop app pivot significantly improves success rates while reducing operational complexity. By following the iterative loop methodology with small, reversible slices, we can ship a robust solution in 3.5-4.5 weeks that meets realistic SLOs with minimal infrastructure dependency.
 
-The architecture is clean, testable, and maintainable. Each feature is behind a flag, every change is reversible, and the entire system is observable. This plan prioritizes user value while maintaining engineering excellence.
+The architecture prioritizes privacy, security, and legal compliance. Each feature is behind a flag, every change is reversible, and the entire system is observable. This plan balances user value with engineering excellence and regulatory requirements.
 
-**Ready for GPT audit.**
+**Post-GPT audit revisions**:
+- ✅ Replaced "100% success" with source-specific SLOs
+- ✅ Added comprehensive privacy consent flow
+- ✅ Included TOS/compliance framework
+- ✅ Updated performance budgets to P95 metrics
+- ✅ Added error taxonomy with user-friendly messages
+- ✅ Strengthened security controls (CSP, IPC allowlisting)
+- ✅ Conservative monetization projections
+- ✅ Extended timeline with testing buffer
+
+**Production-ready with credible claims.**

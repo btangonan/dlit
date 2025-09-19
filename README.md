@@ -40,7 +40,7 @@ npm install
 npm run dev
 ```
 
-3. Open http://localhost:3000
+3. Open http://localhost:5173
 
 ## 🚀 Deploy to Render (Free)
 

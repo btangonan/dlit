@@ -17,7 +17,7 @@ function createWindow() {
 
   if (isDev) {
     // Load from Next.js dev server
-    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools();
   } else {
     // Load from built files
