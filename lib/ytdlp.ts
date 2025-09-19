@@ -68,7 +68,18 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
       console.error('yt-dlp stderr:', stderr);
     }
 
-    const info = JSON.parse(stdout);
+    // Parse and validate the response
+    let info;
+    try {
+      info = JSON.parse(stdout);
+    } catch (parseError) {
+      throw new Error(`Invalid JSON response from yt-dlp: ${parseError.message}`);
+    }
+
+    // Validate that info is a valid object with expected structure
+    if (!info || typeof info !== 'object' || Array.isArray(info)) {
+      throw new Error('yt-dlp returned invalid video information structure');
+    }
 
     // Extract available formats
     const formats: VideoFormat[] = [];
@@ -136,6 +147,6 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     return videoInfo;
   } catch (error: any) {
     console.error('Error extracting video info:', error.message);
-    throw new Error(`Failed to extract video information: ${error.message}`);
+    throw new Error(`Failed to extract video information. The video may be private or unavailable: ${error.message}`);
   }
 }
