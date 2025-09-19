@@ -7,6 +7,7 @@ interface VideoFormat {
   downloadUrl: string;
   filesize?: number;
   hasAudio: boolean;
+  canMergeAudio?: boolean;
 }
 
 interface VideoInfo {
@@ -30,19 +31,42 @@ export default function Home() {
     setVideoInfo(null);
 
     try {
-      const response = await fetch('/api/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      });
+      // Check if running in Electron
+      if (typeof window !== 'undefined' && (window as any).electronAPI) {
+        console.log('🖥️ Running in Electron, using IPC');
+        const result = await (window as any).electronAPI.extractVideo(url);
 
-      const data = await response.json();
+        if (!result.success) {
+          throw new Error(result.error || 'Failed to extract video');
+        }
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to extract video');
+        // Transform the data to match the expected format
+        const transformedData = {
+          ...result.data,
+          formats: result.data.formats.map((format: any) => ({
+            ...format,
+            downloadUrl: format.url // Placeholder - we'll handle downloads differently
+          }))
+        };
+
+        setVideoInfo(transformedData);
+      } else {
+        console.log('🌐 Running in browser, using API');
+        // Fallback to web API for browser/dev mode
+        const response = await fetch('/api/extract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to extract video');
+        }
+
+        setVideoInfo(data);
       }
-
-      setVideoInfo(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -65,13 +89,77 @@ export default function Home() {
     return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${sizes[i]}`;
   };
 
+  const handleDownload = async (format: VideoFormat) => {
+    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+      try {
+        // Show save dialog for desktop app
+        const saveDialog = await (window as any).electronAPI.showSaveDialog({
+          defaultPath: `${videoInfo?.title || 'video'}.${format.format}`,
+          filters: [
+            { name: 'Video Files', extensions: [format.format] }
+          ]
+        });
+
+        if (!saveDialog.canceled && saveDialog.filePath) {
+          console.log('📥 Starting download to:', saveDialog.filePath);
+
+          const result = await (window as any).electronAPI.downloadVideo(
+            url,
+            format.quality,
+            format.format,
+            saveDialog.filePath
+          );
+
+          if (result.success) {
+            alert('Download completed successfully!');
+          } else {
+            alert(`Download failed: ${result.error}`);
+          }
+        }
+      } catch (error) {
+        console.error('Download error:', error);
+        alert('Download failed: ' + (error as Error).message);
+      }
+    } else {
+      // For web version, create proper download instead of opening in browser
+      try {
+        const response = await fetch(format.downloadUrl);
+        const blob = await response.blob();
+
+        // Create download link
+        const downloadUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = `${videoInfo?.title || 'video'}.${format.format}`;
+
+        // Trigger download
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        // Clean up blob URL
+        URL.revokeObjectURL(downloadUrl);
+      } catch (error) {
+        console.error('Download failed:', error);
+        // Fallback to direct link if fetch fails
+        const link = document.createElement('a');
+        link.href = format.downloadUrl;
+        link.download = `${videoInfo?.title || 'video'}.${format.format}`;
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    }
+  };
+
   const videoFormats = videoInfo?.formats.filter(f => f.format === 'mp4') || [];
   const audioFormats = videoInfo?.formats.filter(f => f.format === 'mp3') || [];
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-600 to-blue-600">
+    <div className="min-h-screen bg-gray-900">
       <Head>
-        <title>Lightning Fast Video Downloader - Free & Private</title>
+        <title>Video Downloader - Free & Private</title>
         <meta name="description" content="Download videos from YouTube and Vimeo instantly. No ads, no tracking, completely free." />
       </Head>
 
@@ -79,10 +167,10 @@ export default function Home() {
         {/* Header */}
         <div className="text-center mb-12">
           <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">
-            ⚡ Lightning Fast Downloader
+            Video Downloader
           </h1>
           <p className="text-white/90 text-lg">
-            Download videos instantly - No storage, No tracking, 100% Free
+            Paste video link below, then click CONVERT
           </p>
         </div>
 
@@ -101,7 +189,7 @@ export default function Home() {
             <button
               type="submit"
               disabled={loading}
-              className="px-8 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white font-semibold rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
+              className="px-8 py-3 bg-gray-800 text-white font-semibold rounded-md hover:opacity-90 disabled:opacity-50 transition-opacity"
             >
               {loading ? (
                 <span className="flex items-center gap-2">
@@ -127,7 +215,7 @@ export default function Home() {
         {videoInfo && (
           <div className="bg-white rounded-lg shadow-xl overflow-hidden">
             {/* Video Header */}
-            <div className="p-6 bg-gradient-to-r from-purple-50 to-blue-50">
+            <div className="p-6 bg-gray-800">
               <div className="flex flex-col md:flex-row gap-4">
                 {videoInfo.thumbnail && (
                   <img
@@ -137,10 +225,10 @@ export default function Home() {
                   />
                 )}
                 <div className="flex-1">
-                  <h2 className="text-xl font-semibold text-gray-800 mb-2">
+                  <h2 className="text-xl font-semibold text-white mb-2">
                     {videoInfo.title}
                   </h2>
-                  <p className="text-gray-600">
+                  <p className="text-gray-200">
                     Duration: {formatDuration(videoInfo.duration)}
                   </p>
                 </div>
@@ -154,8 +242,8 @@ export default function Home() {
                   onClick={() => setActiveTab('video')}
                   className={`flex-1 py-3 font-semibold transition-colors ${
                     activeTab === 'video'
-                      ? 'text-purple-600 border-b-2 border-purple-600'
-                      : 'text-gray-600 hover:text-gray-800'
+                      ? 'text-gray-200 border-b-2 border-gray-300'
+                      : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
                   🎥 Video (MP4)
@@ -164,8 +252,8 @@ export default function Home() {
                   onClick={() => setActiveTab('audio')}
                   className={`flex-1 py-3 font-semibold transition-colors ${
                     activeTab === 'audio'
-                      ? 'text-purple-600 border-b-2 border-purple-600'
-                      : 'text-gray-600 hover:text-gray-800'
+                      ? 'text-gray-200 border-b-2 border-gray-300'
+                      : 'text-gray-400 hover:text-gray-200'
                   }`}
                 >
                   🎵 Audio (MP3)
@@ -184,20 +272,24 @@ export default function Home() {
                           {format.quality}
                         </span>
                         <span className="text-sm text-gray-500">
-                          {format.hasAudio ? '✓ With Audio' : '⚠️ No Audio'}
+                          {format.hasAudio
+                            ? '✓ With Audio'
+                            : (typeof window !== 'undefined' && (window as any).electronAPI && format.canMergeAudio)
+                              ? '🎵 Audio Added on Download'
+                              : '⚠️ No Audio'
+                          }
                         </span>
                       </div>
                       <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-600">
                           {formatFileSize(format.filesize)}
                         </span>
-                        <a
-                          href={format.downloadUrl}
-                          className="px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white font-medium rounded-md hover:opacity-90 transition-opacity"
-                          download
+                        <button
+                          onClick={() => handleDownload(format)}
+                          className="px-6 py-2 bg-gray-800 text-white font-medium rounded-md hover:opacity-90 transition-opacity"
                         >
                           Download
-                        </a>
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -218,13 +310,12 @@ export default function Home() {
                         <span className="text-sm text-gray-600">
                           {formatFileSize(format.filesize)}
                         </span>
-                        <a
-                          href={format.downloadUrl}
-                          className="px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white font-medium rounded-md hover:opacity-90 transition-opacity"
-                          download
+                        <button
+                          onClick={() => handleDownload(format)}
+                          className="px-6 py-2 bg-gray-800 text-white font-medium rounded-md hover:opacity-90 transition-opacity"
                         >
                           Download
-                        </a>
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -238,24 +329,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Features */}
-        <div className="grid md:grid-cols-3 gap-6 mt-12">
-          <div className="text-center text-white">
-            <div className="text-4xl mb-3">⚡</div>
-            <h3 className="font-semibold text-lg mb-2">Lightning Fast</h3>
-            <p className="text-white/80 text-sm">Instant processing with no queues or waiting</p>
-          </div>
-          <div className="text-center text-white">
-            <div className="text-4xl mb-3">🔒</div>
-            <h3 className="font-semibold text-lg mb-2">100% Private</h3>
-            <p className="text-white/80 text-sm">No storage, no tracking, no ads ever</p>
-          </div>
-          <div className="text-center text-white">
-            <div className="text-4xl mb-3">♾️</div>
-            <h3 className="font-semibold text-lg mb-2">Unlimited & Free</h3>
-            <p className="text-white/80 text-sm">Download as many videos as you want</p>
-          </div>
-        </div>
       </div>
     </div>
   );
