@@ -4,12 +4,43 @@ services:
     runtime: node
     plan: free
     buildCommand: |
-      # Install yt-dlp binary
-      pip install yt-dlp
+      echo "🚀 Starting production build with comprehensive yt-dlp installation..."
 
-      # Install dependencies and build
+      # Method 1: Try pip install
+      echo "📦 Attempting pip install..."
+      if pip install yt-dlp; then
+        echo "✅ pip install successful"
+      else
+        echo "❌ pip install failed, trying pip3..."
+        if pip3 install yt-dlp; then
+          echo "✅ pip3 install successful"
+        else
+          echo "❌ pip3 failed, trying direct download..."
+          # Method 2: Direct binary download
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          chmod +x /usr/local/bin/yt-dlp
+          echo "✅ Direct download completed"
+        fi
+      fi
+
+      # Verify installation
+      echo "🔍 Verifying yt-dlp installation..."
+      if command -v yt-dlp >/dev/null 2>&1; then
+        echo "✅ yt-dlp found: $(yt-dlp --version)"
+      elif [ -f /usr/local/bin/yt-dlp ]; then
+        echo "✅ yt-dlp binary exists at /usr/local/bin/yt-dlp"
+      else
+        echo "⚠️ yt-dlp not found, but continuing build..."
+      fi
+
+      # Install Node.js dependencies and build
+      echo "📦 Installing Node.js dependencies..."
       npm install
+
+      echo "🏗️ Building Next.js application..."
       npm run build
+
+      echo "✅ Build completed!"
 
     startCommand: npm start
     envVars:
