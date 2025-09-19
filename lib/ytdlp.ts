@@ -58,6 +58,14 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
   try {
     const ytdlpPath = await getYtdlpPath();
 
+    // Log yt-dlp version for debugging
+    try {
+      const { stdout: versionOutput } = await execAsync(`"${ytdlpPath}" --version`);
+      console.log(`🔧 Using yt-dlp version: ${versionOutput.trim()} at ${ytdlpPath}`);
+    } catch (e) {
+      console.log(`⚠️ Could not get yt-dlp version from ${ytdlpPath}`);
+    }
+
     // Execute yt-dlp to get video info with bot detection evasion
     const { stdout, stderr } = await execAsync(
       `"${ytdlpPath}" -j --no-warnings ` +
@@ -70,7 +78,7 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
       `--add-header "Upgrade-Insecure-Requests:1" ` +
       `"${videoUrl}"`,
       {
-        maxBuffer: 1024 * 1024 * 10, // 10MB buffer
+        maxBuffer: 1024 * 1024 * 50, // 50MB buffer for large JSON
         timeout: 45000 // Increased to 45 seconds for bot evasion
       }
     );
@@ -157,7 +165,19 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     cache.set(cacheKey, videoInfo);
     return videoInfo;
   } catch (error: any) {
-    console.error('Error extracting video info:', error.message);
+    const stderr = error?.stderr || '';
+    const stdout = error?.stdout || '';
+    const code = typeof error?.code === 'number' ? error.code : undefined;
+
+    console.error('yt-dlp FAILED', {
+      code,
+      stderr: stderr?.slice(0, 4000),
+      stdout: stdout?.slice(0, 1000),
+      message: error.message
+    });
+
+    // Prefer informative stderr to generic message
+    const msg = stderr?.trim() || error.message || 'Unknown yt-dlp error';
 
     // Enhanced error messages for production debugging
     if (error.message.includes('yt-dlp not found')) {
@@ -169,7 +189,7 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     } else if (error.message.includes('Invalid JSON')) {
       throw new Error('Video processing error: Invalid response from extraction service');
     } else {
-      throw new Error(`Failed to extract video information. The video may be private or unavailable.`);
+      throw new Error(msg);
     }
   }
 }
