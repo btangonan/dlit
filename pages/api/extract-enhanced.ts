@@ -36,14 +36,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const videoInfo = await getVideoInfo(url);
 
     // Generate download tokens for each format
-    const formatsWithTokens = videoInfo.formats.map(format => ({
-      ...format,
-      downloadUrl: `/api/download?token=${generateDownloadToken(
-        format.url,
-        format.quality,
-        format.format
-      )}`
-    }));
+    const formatsWithTokens = await Promise.all(
+      videoInfo.formats.map(async format => ({
+        ...format,
+        downloadUrl: `/api/download?token=${await generateDownloadToken(
+          format.url,
+          format.quality,
+          format.format
+        )}`
+      }))
+    );
 
     console.log(`✅ Successfully extracted: "${videoInfo.title}" with ${formatsWithTokens.length} formats`);
 

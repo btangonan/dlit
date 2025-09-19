@@ -1,6 +1,9 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { verifyDownloadToken } from '../../lib/token';
+import { isTrustedCDN } from '../../lib/urls';
 import fetch from 'node-fetch';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 // Disable Next.js body parsing to handle streams
 export const config = {
@@ -20,7 +23,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: 'Invalid download token' });
   }
 
-  const payload = verifyDownloadToken(token);
+  const payload = await verifyDownloadToken(token);
 
   if (!payload) {
     return res.status(401).json({ error: 'Invalid or expired token' });
@@ -29,26 +32,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const { url, quality, format } = payload;
 
   try {
-    // Check if the URL is from a trusted domain
-    const trustedDomains = [
-      'googlevideo.com',
-      'youtube.com',
-      'ytimg.com',
-      'vimeocdn.com',
-      'vimeo.com'
-    ];
-
-    const urlObj = new URL(url);
-    const isTrusted = trustedDomains.some(domain => urlObj.hostname.includes(domain));
+    // Check if the URL is from a trusted CDN using secure domain validation
+    const isTrusted = isTrustedCDN(url);
 
     if (!isTrusted) {
       return res.status(403).json({ error: 'Untrusted video source' });
     }
 
+    // Parse URL to check hostname
+    const urlObj = new URL(url);
+
     // For YouTube direct URLs, we can often redirect (saves bandwidth)
     if (urlObj.hostname.includes('googlevideo.com')) {
       // YouTube URLs typically work with direct redirect
-      res.setHeader('Content-Disposition', `attachment; filename="video.${format}"`);
+      // Note: Content-Disposition header is ignored on redirects
       return res.redirect(302, url);
     }
 
@@ -74,12 +71,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     res.setHeader('Content-Disposition', `attachment; filename="video_${quality}.${format}"`);
 
-    // Stream the video through our server
-    if (response.body) {
-      response.body.pipe(res);
-    } else {
+    // Stream the video through our server with proper backpressure handling
+    if (!response.body) {
       throw new Error('No response body');
     }
+
+    // Convert Web Stream to Node.js stream and pipe with proper error handling
+    const nodeStream = Readable.fromWeb(response.body as any);
+    await pipeline(nodeStream, res);
   } catch (error) {
     console.error('Download error:', error);
     return res.status(500).json({ error: 'Failed to download video' });

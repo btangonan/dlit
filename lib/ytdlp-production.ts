@@ -1,10 +1,8 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
 import { LRUCache } from 'lru-cache';
 import fs from 'fs';
-
-const execAsync = promisify(exec);
+import { safeExecute } from './safeExec';
+import { assertAllowedUrl, sanitizeUrlForLogging } from './urls';
 
 // Cache extracted URLs for 5 minutes to avoid re-extraction
 const cache = new LRUCache<string, VideoInfo>({
@@ -57,7 +55,7 @@ async function getYtdlpPath(): Promise<string> {
       }
 
       // Test binary execution with short timeout
-      const { stdout } = await execAsync(`"${ytdlpPath}" --version`, {
+      const { stdout } = await safeExecute(ytdlpPath, ['--version'], {
         timeout: 3000,
         maxBuffer: 1024
       });
@@ -87,6 +85,11 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
   let ytdlpPath: string;
   let executionStartTime = Date.now();
 
+  // Validate URL before processing
+  const validatedUrl = assertAllowedUrl(videoUrl);
+  const sanitizedUrl = sanitizeUrlForLogging(videoUrl);
+  console.log(`🔍 Processing video from: ${sanitizedUrl}`);
+
   try {
     ytdlpPath = await getYtdlpPath();
     console.log(`🔧 Using yt-dlp at: ${ytdlpPath}`);
@@ -96,12 +99,12 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
   }
 
   try {
-    // Enhanced command with production-specific optimizations
-    const command = `"${ytdlpPath}" -j --no-warnings --no-check-certificates --prefer-insecure "${videoUrl}"`;
-    console.log(`🚀 Executing: ${command}`);
+    // Production-optimized command WITHOUT insecure TLS flags
+    const args = ['-j', '--no-warnings', validatedUrl.href];
+    console.log(`🚀 Executing yt-dlp with secure settings`);
 
-    const { stdout, stderr } = await execAsync(command, {
-      maxBuffer: 1024 * 1024 * 10, // 10MB buffer
+    const { stdout, stderr } = await safeExecute(ytdlpPath, args, {
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer
       timeout: 30000, // 30 seconds timeout
       env: {
         ...process.env,

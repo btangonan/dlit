@@ -1,10 +1,8 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
 import { promises as fs } from 'fs';
 import { LRUCache } from 'lru-cache';
-
-const execAsync = promisify(exec);
+import { safeExecute } from './safeExec';
+import { assertAllowedUrl, sanitizeUrlForLogging } from './urls';
 
 // Cache extracted URLs for 5 minutes to avoid re-extraction
 const cache = new LRUCache<string, VideoInfo>({
@@ -70,7 +68,7 @@ async function getYtdlpPath(): Promise<string> {
 
   for (const ytdlpPath of paths) {
     try {
-      await execAsync(`"${ytdlpPath}" --version`);
+      await safeExecute(ytdlpPath, ['--version']);
       console.log(`✅ Found yt-dlp at: ${ytdlpPath}`);
       return ytdlpPath;
     } catch (e) {
@@ -90,9 +88,14 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
   try {
     const ytdlpPath = await getYtdlpPath();
 
+    // Validate URL before processing
+    const validatedUrl = assertAllowedUrl(videoUrl);
+    const sanitizedUrl = sanitizeUrlForLogging(videoUrl);
+    console.log(`🔍 Processing video from: ${sanitizedUrl}`);
+
     // Log yt-dlp version for debugging
     try {
-      const { stdout: versionOutput } = await execAsync(`"${ytdlpPath}" --version`);
+      const { stdout: versionOutput } = await safeExecute(ytdlpPath, ['--version']);
       console.log(`🔧 Using yt-dlp version: ${versionOutput.trim()} at ${ytdlpPath}`);
     } catch (e) {
       console.log(`⚠️ Could not get yt-dlp version from ${ytdlpPath}`);
@@ -105,10 +108,11 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     // Strategy 1: Try Android client first (often bypasses bot detection)
     try {
       console.log('🤖 Trying Android client extraction...');
-      const result = await execAsync(
-        `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=android" "${videoUrl}"`,
+      const result = await safeExecute(
+        ytdlpPath,
+        ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
         {
-          maxBuffer: 1024 * 1024 * 50,
+          maxBuffer: 50 * 1024 * 1024,
           timeout: 30000
         }
       );
@@ -121,10 +125,11 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
 
       // Strategy 2: Fallback to minimal extraction
       try {
-        const result = await execAsync(
-          `"${ytdlpPath}" -j --no-warnings "${videoUrl}"`,
+        const result = await safeExecute(
+          ytdlpPath,
+          ['-j', '--no-warnings', validatedUrl.href],
           {
-            maxBuffer: 1024 * 1024 * 50,
+            maxBuffer: 50 * 1024 * 1024,
             timeout: 30000
           }
         );
@@ -141,10 +146,11 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
         const cookieFile = await ensureCookieFile();
         if (cookieFile) {
           try {
-            const result = await execAsync(
-              `"${ytdlpPath}" -j --no-warnings --cookies "${cookieFile}" "${videoUrl}"`,
+            const result = await safeExecute(
+              ytdlpPath,
+              ['-j', '--no-warnings', '--cookies', cookieFile, validatedUrl.href],
               {
-                maxBuffer: 1024 * 1024 * 50,
+                maxBuffer: 50 * 1024 * 1024,
                 timeout: 45000
               }
             );
@@ -155,10 +161,11 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
             console.log('🍪 Cookie authentication failed, trying Android client...');
             // Fallback to Android client with cookies
             try {
-              const result = await execAsync(
-                `"${ytdlpPath}" -j --no-warnings --cookies "${cookieFile}" --extractor-args "youtube:player_client=android" "${videoUrl}"`,
+              const result = await safeExecute(
+                ytdlpPath,
+                ['-j', '--no-warnings', '--cookies', cookieFile, '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
                 {
-                  maxBuffer: 1024 * 1024 * 50,
+                  maxBuffer: 50 * 1024 * 1024,
                   timeout: 45000
                 }
               );
@@ -168,10 +175,11 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
             } catch (androidCookieError: any) {
               // Final fallback: iOS client with cookies
               console.log('📱 Android + cookies failed, trying iOS + cookies...');
-              const result = await execAsync(
-                `"${ytdlpPath}" -j --no-warnings --cookies "${cookieFile}" --extractor-args "youtube:player_client=ios" "${videoUrl}"`,
+              const result = await safeExecute(
+                ytdlpPath,
+                ['-j', '--no-warnings', '--cookies', cookieFile, '--extractor-args', 'youtube:player_client=ios', validatedUrl.href],
                 {
-                  maxBuffer: 1024 * 1024 * 50,
+                  maxBuffer: 50 * 1024 * 1024,
                   timeout: 45000
                 }
               );
@@ -184,10 +192,11 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
           // No cookies available, fallback to original behavior
           console.log('🤖 No cookies available, trying Android client...');
           try {
-            const result = await execAsync(
-              `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=android" "${videoUrl}"`,
+            const result = await safeExecute(
+              ytdlpPath,
+              ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
               {
-                maxBuffer: 1024 * 1024 * 50,
+                maxBuffer: 50 * 1024 * 1024,
                 timeout: 45000
               }
             );
@@ -197,10 +206,11 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
           } catch (androidError: any) {
             // If Android client fails, try iOS client
             console.log('📱 Android failed, trying iOS client...');
-            const result = await execAsync(
-              `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=ios" "${videoUrl}"`,
+            const result = await safeExecute(
+              ytdlpPath,
+              ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=ios', validatedUrl.href],
               {
-                maxBuffer: 1024 * 1024 * 50,
+                maxBuffer: 50 * 1024 * 1024,
                 timeout: 45000
               }
             );

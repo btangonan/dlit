@@ -1,11 +1,14 @@
 import { NextApiRequest, NextApiResponse } from 'next';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
-
-const execAsync = promisify(exec);
+import { safeExecute } from '../../lib/safeExec';
+import { protectDebugEndpoint, sanitizeDebugOutput } from '../../lib/debugAuth';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // Protect debug endpoint in production
+  if (!protectDebugEndpoint(req, res)) {
+    return;
+  }
+
   console.log('🔍 DEBUG: Starting comprehensive environment check...');
 
   const debugInfo: any = {
@@ -32,7 +35,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   for (const testPath of testPaths) {
     try {
-      const { stdout } = await execAsync(`"${testPath}" --version`);
+      const { stdout } = await safeExecute(testPath, ['--version']);
       debugInfo.binaryTests[testPath] = {
         status: 'success',
         version: stdout.trim()
@@ -49,7 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   // Test Python/pip availability
   try {
-    const { stdout } = await execAsync('python3 --version');
+    const { stdout } = await safeExecute('python3', ['--version']);
     debugInfo.python = { status: 'available', version: stdout.trim() };
     console.log(`✅ DEBUG: Python available: ${stdout.trim()}`);
   } catch (error: any) {
@@ -58,7 +61,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const { stdout } = await execAsync('pip --version');
+    const { stdout } = await safeExecute('pip', ['--version']);
     debugInfo.pip = { status: 'available', version: stdout.trim() };
     console.log(`✅ DEBUG: Pip available: ${stdout.trim()}`);
   } catch (error: any) {
@@ -68,7 +71,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   // Test basic network connectivity
   try {
-    const { stdout } = await execAsync('curl -s --head https://www.youtube.com');
+    const { stdout } = await safeExecute('curl', ['-s', '--head', 'https://www.youtube.com']);
     debugInfo.network = { status: 'success', response: 'YouTube accessible' };
     console.log('✅ DEBUG: Network connectivity to YouTube successful');
   } catch (error: any) {
@@ -86,7 +89,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   };
 
   console.log('🔍 DEBUG: Complete environment check finished');
-  console.log('📊 DEBUG: Results:', JSON.stringify(debugInfo, null, 2));
 
-  res.status(200).json(debugInfo);
+  // Sanitize debug output to remove sensitive information
+  const sanitizedDebugInfo = sanitizeDebugOutput(debugInfo);
+  console.log('📊 DEBUG: Results:', JSON.stringify(sanitizedDebugInfo, null, 2));
+
+  res.status(200).json(sanitizedDebugInfo);
 }
