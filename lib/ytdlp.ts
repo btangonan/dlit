@@ -12,6 +12,8 @@ const cache = new LRUCache<string, VideoInfo>({
   ttl: 1000 * 60 * 5, // 5 minutes
 });
 
+// Cookie authentication for bot-resistant videos - Production deployment v2
+
 // Cookie file management for bot detection evasion
 const COOKIE_FILE_PATH = path.join(process.cwd(), 'cookies.txt');
 
