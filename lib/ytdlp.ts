@@ -66,22 +66,53 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
       console.log(`⚠️ Could not get yt-dlp version from ${ytdlpPath}`);
     }
 
-    // Execute yt-dlp to get video info with bot detection evasion
-    const { stdout, stderr } = await execAsync(
-      `"${ytdlpPath}" -j --no-warnings ` +
-      `--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" ` +
-      `--add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" ` +
-      `--add-header "Accept-Language:en-US,en;q=0.9" ` +
-      `--add-header "Accept-Encoding:gzip, deflate, br" ` +
-      `--add-header "DNT:1" ` +
-      `--add-header "Connection:keep-alive" ` +
-      `--add-header "Upgrade-Insecure-Requests:1" ` +
-      `"${videoUrl}"`,
-      {
-        maxBuffer: 1024 * 1024 * 50, // 50MB buffer for large JSON
-        timeout: 45000 // Increased to 45 seconds for bot evasion
+    // Try minimal extraction first (works for most videos)
+    let stdout, stderr;
+    try {
+      const result = await execAsync(
+        `"${ytdlpPath}" -j --no-warnings "${videoUrl}"`,
+        {
+          maxBuffer: 1024 * 1024 * 50, // 50MB buffer for large JSON
+          timeout: 30000
+        }
+      );
+      stdout = result.stdout;
+      stderr = result.stderr;
+      console.log('✅ Minimal extraction successful');
+    } catch (minimalError: any) {
+      // If we get bot detection error, try with targeted evasion
+      if (minimalError.stderr && minimalError.stderr.includes('Sign in to confirm you\'re not a bot')) {
+        console.log('🤖 Bot detection detected, trying with Android client...');
+        try {
+          const result = await execAsync(
+            `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=android" "${videoUrl}"`,
+            {
+              maxBuffer: 1024 * 1024 * 50,
+              timeout: 45000
+            }
+          );
+          stdout = result.stdout;
+          stderr = result.stderr;
+          console.log('✅ Android client extraction successful');
+        } catch (androidError: any) {
+          // If Android client fails, try iOS client
+          console.log('📱 Android failed, trying iOS client...');
+          const result = await execAsync(
+            `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=ios" "${videoUrl}"`,
+            {
+              maxBuffer: 1024 * 1024 * 50,
+              timeout: 45000
+            }
+          );
+          stdout = result.stdout;
+          stderr = result.stderr;
+          console.log('✅ iOS client extraction successful');
+        }
+      } else {
+        // Re-throw if not bot detection
+        throw minimalError;
       }
-    );
+    }
 
     if (stderr && !stderr.includes('WARNING')) {
       console.error('yt-dlp stderr:', stderr);
