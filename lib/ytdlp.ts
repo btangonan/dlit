@@ -1,6 +1,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { promises as fs } from 'fs';
 import { LRUCache } from 'lru-cache';
 
 const execAsync = promisify(exec);
@@ -10,6 +11,35 @@ const cache = new LRUCache<string, VideoInfo>({
   max: 100,
   ttl: 1000 * 60 * 5, // 5 minutes
 });
+
+// Cookie file management for bot detection evasion
+const COOKIE_FILE_PATH = path.join(process.cwd(), 'cookies.txt');
+
+async function ensureCookieFile(): Promise<string | null> {
+  try {
+    await fs.access(COOKIE_FILE_PATH);
+    console.log('🍪 Using existing cookie file for authentication');
+    return COOKIE_FILE_PATH;
+  } catch (error) {
+    // Cookie file doesn't exist - we'll create a minimal one
+    const minimalCookies = `# Netscape HTTP Cookie File
+# This is a generated file! Do not edit.
+
+.youtube.com	TRUE	/	FALSE	0	CONSENT	YES+cb.20210328-17-p0.en+FX+000
+.youtube.com	TRUE	/	TRUE	0	__Secure-3PSID	session_placeholder
+.youtube.com	TRUE	/	FALSE	0	VISITOR_INFO1_LIVE	visitor_placeholder
+`;
+
+    try {
+      await fs.writeFile(COOKIE_FILE_PATH, minimalCookies, 'utf8');
+      console.log('🍪 Created minimal cookie file for bot evasion');
+      return COOKIE_FILE_PATH;
+    } catch (writeError) {
+      console.log('⚠️ Could not create cookie file, proceeding without cookies');
+      return null;
+    }
+  }
+}
 
 export interface VideoInfo {
   title: string;
@@ -82,31 +112,79 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     } catch (minimalError: any) {
       // If we get bot detection error, try with targeted evasion
       if (minimalError.stderr && minimalError.stderr.includes('Sign in to confirm you\'re not a bot')) {
-        console.log('🤖 Bot detection detected, trying with Android client...');
-        try {
-          const result = await execAsync(
-            `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=android" "${videoUrl}"`,
-            {
-              maxBuffer: 1024 * 1024 * 50,
-              timeout: 45000
+        console.log('🤖 Bot detection detected, trying cookie authentication...');
+
+        // Try with cookies first
+        const cookieFile = await ensureCookieFile();
+        if (cookieFile) {
+          try {
+            const result = await execAsync(
+              `"${ytdlpPath}" -j --no-warnings --cookies "${cookieFile}" "${videoUrl}"`,
+              {
+                maxBuffer: 1024 * 1024 * 50,
+                timeout: 45000
+              }
+            );
+            stdout = result.stdout;
+            stderr = result.stderr;
+            console.log('✅ Cookie authentication successful');
+          } catch (cookieError: any) {
+            console.log('🍪 Cookie authentication failed, trying Android client...');
+            // Fallback to Android client with cookies
+            try {
+              const result = await execAsync(
+                `"${ytdlpPath}" -j --no-warnings --cookies "${cookieFile}" --extractor-args "youtube:player_client=android" "${videoUrl}"`,
+                {
+                  maxBuffer: 1024 * 1024 * 50,
+                  timeout: 45000
+                }
+              );
+              stdout = result.stdout;
+              stderr = result.stderr;
+              console.log('✅ Android client + cookies successful');
+            } catch (androidCookieError: any) {
+              // Final fallback: iOS client with cookies
+              console.log('📱 Android + cookies failed, trying iOS + cookies...');
+              const result = await execAsync(
+                `"${ytdlpPath}" -j --no-warnings --cookies "${cookieFile}" --extractor-args "youtube:player_client=ios" "${videoUrl}"`,
+                {
+                  maxBuffer: 1024 * 1024 * 50,
+                  timeout: 45000
+                }
+              );
+              stdout = result.stdout;
+              stderr = result.stderr;
+              console.log('✅ iOS client + cookies successful');
             }
-          );
-          stdout = result.stdout;
-          stderr = result.stderr;
-          console.log('✅ Android client extraction successful');
-        } catch (androidError: any) {
-          // If Android client fails, try iOS client
-          console.log('📱 Android failed, trying iOS client...');
-          const result = await execAsync(
-            `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=ios" "${videoUrl}"`,
-            {
-              maxBuffer: 1024 * 1024 * 50,
-              timeout: 45000
-            }
-          );
-          stdout = result.stdout;
-          stderr = result.stderr;
-          console.log('✅ iOS client extraction successful');
+          }
+        } else {
+          // No cookies available, fallback to original behavior
+          console.log('🤖 No cookies available, trying Android client...');
+          try {
+            const result = await execAsync(
+              `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=android" "${videoUrl}"`,
+              {
+                maxBuffer: 1024 * 1024 * 50,
+                timeout: 45000
+              }
+            );
+            stdout = result.stdout;
+            stderr = result.stderr;
+            console.log('✅ Android client extraction successful');
+          } catch (androidError: any) {
+            // If Android client fails, try iOS client
+            console.log('📱 Android failed, trying iOS client...');
+            const result = await execAsync(
+              `"${ytdlpPath}" -j --no-warnings --extractor-args "youtube:player_client=ios" "${videoUrl}"`,
+              {
+                maxBuffer: 1024 * 1024 * 50,
+                timeout: 45000
+              }
+            );
+            stdout = result.stdout;
+            stderr = result.stderr;
+            console.log('✅ iOS client extraction successful');
+          }
         }
       } else {
         // Re-throw if not bot detection
