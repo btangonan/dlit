@@ -54,6 +54,7 @@ export interface VideoFormat {
   url: string;
   filesize?: number;
   hasAudio: boolean;
+  canMergeAudio?: boolean;
 }
 
 async function getYtdlpPath(): Promise<string> {
@@ -80,6 +81,21 @@ async function getYtdlpPath(): Promise<string> {
   throw new Error('yt-dlp not found in production environment. Binary installation may have failed.');
 }
 
+// Platform detection helper
+function detectPlatform(url: string): 'youtube' | 'vimeo' {
+  const parsedUrl = new URL(url);
+  const hostname = parsedUrl.hostname.toLowerCase();
+
+  if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+    return 'youtube';
+  } else if (hostname.includes('vimeo.com')) {
+    return 'vimeo';
+  }
+
+  // Default to youtube for backward compatibility
+  return 'youtube';
+}
+
 export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
   const cacheKey = videoUrl;
   const cached = cache.get(cacheKey);
@@ -91,7 +107,8 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     // Validate URL before processing
     const validatedUrl = assertAllowedUrl(videoUrl);
     const sanitizedUrl = sanitizeUrlForLogging(videoUrl);
-    console.log(`🔍 Processing video from: ${sanitizedUrl}`);
+    const platform = detectPlatform(videoUrl);
+    console.log(`🔍 Processing ${platform} video from: ${sanitizedUrl}`);
 
     // Log yt-dlp version for debugging
     try {
@@ -101,30 +118,14 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
       console.log(`⚠️ Could not get yt-dlp version from ${ytdlpPath}`);
     }
 
-    // Try multiple extraction strategies for production bot resistance
+    // Platform-specific extraction strategies
     let stdout, stderr;
     let extractionSuccessful = false;
 
-    // Strategy 1: Try Android client first (often bypasses bot detection)
-    try {
-      console.log('🤖 Trying Android client extraction...');
-      const result = await safeExecute(
-        ytdlpPath,
-        ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
-        {
-          maxBuffer: 50 * 1024 * 1024,
-          timeout: 30000
-        }
-      );
-      stdout = result.stdout;
-      stderr = result.stderr;
-      extractionSuccessful = true;
-      console.log('✅ Android client extraction successful');
-    } catch (androidError: any) {
-      console.log('📱 Android client failed, trying minimal extraction...');
-
-      // Strategy 2: Fallback to minimal extraction
+    if (platform === 'vimeo') {
+      // Vimeo extraction strategy - simpler approach, no mobile clients needed
       try {
+        console.log('🎯 Trying Vimeo standard extraction...');
         const result = await safeExecute(
           ytdlpPath,
           ['-j', '--no-warnings', validatedUrl.href],
@@ -136,34 +137,63 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
         stdout = result.stdout;
         stderr = result.stderr;
         extractionSuccessful = true;
-        console.log('✅ Minimal extraction successful');
-      } catch (minimalError: any) {
-        // Strategy 3: If we get bot detection error, try with targeted evasion
-        if (minimalError.stderr && minimalError.stderr.includes('Sign in to confirm you\'re not a bot')) {
-          console.log('🤖 Bot detection detected, trying cookie authentication...');
+        console.log('✅ Vimeo extraction successful');
+      } catch (vimeoError: any) {
+        // If standard fails, try with referer for private videos
+        if (vimeoError.stderr && (vimeoError.stderr.includes('private') || vimeoError.stderr.includes('password'))) {
+          console.log('🔒 Private Vimeo content detected - not supported without authentication');
+          throw new Error('This Vimeo video is private and requires authentication. Please try a public Vimeo video.');
+        } else {
+          throw vimeoError;
+        }
+      }
+    } else {
+      // YouTube extraction strategies - prioritize quality over bot detection evasion
+      // Strategy 1: Try standard extraction first (gives all quality options)
+      try {
+        console.log('🎯 Trying YouTube standard extraction for full quality options...');
+        const result = await safeExecute(
+          ytdlpPath,
+          ['-j', '--no-warnings', validatedUrl.href],
+          {
+            maxBuffer: 50 * 1024 * 1024,
+            timeout: 30000
+          }
+        );
+        stdout = result.stdout;
+        stderr = result.stderr;
+        extractionSuccessful = true;
+        console.log('✅ YouTube standard extraction successful');
+      } catch (standardError: any) {
+        console.log('📋 YouTube standard extraction failed, trying Android client...');
 
-        // Try with cookies first
-        const cookieFile = await ensureCookieFile();
-        if (cookieFile) {
-          try {
-            const result = await safeExecute(
-              ytdlpPath,
-              ['-j', '--no-warnings', '--cookies', cookieFile, validatedUrl.href],
-              {
-                maxBuffer: 50 * 1024 * 1024,
-                timeout: 45000
-              }
-            );
-            stdout = result.stdout;
-            stderr = result.stderr;
-            console.log('✅ Cookie authentication successful');
-          } catch (cookieError: any) {
-            console.log('🍪 Cookie authentication failed, trying Android client...');
-            // Fallback to Android client with cookies
+        // Strategy 2: Fallback to Android client (bypasses bot detection but limited quality)
+        try {
+          console.log('🤖 Trying YouTube Android client extraction...');
+          const result = await safeExecute(
+            ytdlpPath,
+            ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
+            {
+              maxBuffer: 50 * 1024 * 1024,
+              timeout: 30000
+            }
+          );
+          stdout = result.stdout;
+          stderr = result.stderr;
+          extractionSuccessful = true;
+          console.log('✅ YouTube Android client extraction successful');
+        } catch (androidError: any) {
+          // Strategy 3: If we get bot detection error, try with targeted evasion
+          if (androidError.stderr && androidError.stderr.includes('Sign in to confirm you\'re not a bot')) {
+            console.log('🤖 YouTube bot detection detected, trying cookie authentication...');
+
+          // Try with cookies first
+          const cookieFile = await ensureCookieFile();
+          if (cookieFile) {
             try {
               const result = await safeExecute(
                 ytdlpPath,
-                ['-j', '--no-warnings', '--cookies', cookieFile, '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
+                ['-j', '--no-warnings', '--cookies', cookieFile, validatedUrl.href],
                 {
                   maxBuffer: 50 * 1024 * 1024,
                   timeout: 45000
@@ -171,13 +201,45 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
               );
               stdout = result.stdout;
               stderr = result.stderr;
-              console.log('✅ Android client + cookies successful');
-            } catch (androidCookieError: any) {
-              // Final fallback: iOS client with cookies
-              console.log('📱 Android + cookies failed, trying iOS + cookies...');
+              console.log('✅ YouTube cookie authentication successful');
+            } catch (cookieError: any) {
+              console.log('🍪 YouTube cookie authentication failed, trying Android client...');
+              // Fallback to Android client with cookies
+              try {
+                const result = await safeExecute(
+                  ytdlpPath,
+                  ['-j', '--no-warnings', '--cookies', cookieFile, '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
+                  {
+                    maxBuffer: 50 * 1024 * 1024,
+                    timeout: 45000
+                  }
+                );
+                stdout = result.stdout;
+                stderr = result.stderr;
+                console.log('✅ YouTube Android client + cookies successful');
+              } catch (androidCookieError: any) {
+                // Final fallback: iOS client with cookies
+                console.log('📱 YouTube Android + cookies failed, trying iOS + cookies...');
+                const result = await safeExecute(
+                  ytdlpPath,
+                  ['-j', '--no-warnings', '--cookies', cookieFile, '--extractor-args', 'youtube:player_client=ios', validatedUrl.href],
+                  {
+                    maxBuffer: 50 * 1024 * 1024,
+                    timeout: 45000
+                  }
+                );
+                stdout = result.stdout;
+                stderr = result.stderr;
+                console.log('✅ YouTube iOS client + cookies successful');
+              }
+            }
+          } else {
+            // No cookies available, fallback to original behavior
+            console.log('🤖 No YouTube cookies available, trying Android client...');
+            try {
               const result = await safeExecute(
                 ytdlpPath,
-                ['-j', '--no-warnings', '--cookies', cookieFile, '--extractor-args', 'youtube:player_client=ios', validatedUrl.href],
+                ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
                 {
                   maxBuffer: 50 * 1024 * 1024,
                   timeout: 45000
@@ -185,44 +247,28 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
               );
               stdout = result.stdout;
               stderr = result.stderr;
-              console.log('✅ iOS client + cookies successful');
+              console.log('✅ YouTube Android client extraction successful');
+            } catch (androidError: any) {
+              // If Android client fails, try iOS client
+              console.log('📱 YouTube Android failed, trying iOS client...');
+              const result = await safeExecute(
+                ytdlpPath,
+                ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=ios', validatedUrl.href],
+                {
+                  maxBuffer: 50 * 1024 * 1024,
+                  timeout: 45000
+                }
+              );
+              stdout = result.stdout;
+              stderr = result.stderr;
+              console.log('✅ YouTube iOS client extraction successful');
             }
           }
         } else {
-          // No cookies available, fallback to original behavior
-          console.log('🤖 No cookies available, trying Android client...');
-          try {
-            const result = await safeExecute(
-              ytdlpPath,
-              ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=android', validatedUrl.href],
-              {
-                maxBuffer: 50 * 1024 * 1024,
-                timeout: 45000
-              }
-            );
-            stdout = result.stdout;
-            stderr = result.stderr;
-            console.log('✅ Android client extraction successful');
-          } catch (androidError: any) {
-            // If Android client fails, try iOS client
-            console.log('📱 Android failed, trying iOS client...');
-            const result = await safeExecute(
-              ytdlpPath,
-              ['-j', '--no-warnings', '--extractor-args', 'youtube:player_client=ios', validatedUrl.href],
-              {
-                maxBuffer: 50 * 1024 * 1024,
-                timeout: 45000
-              }
-            );
-            stdout = result.stdout;
-            stderr = result.stderr;
-            console.log('✅ iOS client extraction successful');
-          }
+          // Re-throw if not bot detection
+          throw androidError;
         }
-      } else {
-        // Re-throw if not bot detection
-        throw minimalError;
-      }
+        }
       }
     }
 
@@ -243,10 +289,18 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
       throw new Error('yt-dlp returned invalid video information structure');
     }
 
-    // Extract available formats
+    // Extract available formats with enhanced audio strategy
     const formats: VideoFormat[] = [];
 
-    // Add video formats
+    // Check for best audio format availability for merging
+    const audioFormats = info.formats?.filter((f: any) =>
+      f.acodec !== 'none' && f.acodec !== null && (f.vcodec === 'none' || f.vcodec === null)
+    ).sort((a: any, b: any) => (b.abr || 0) - (a.abr || 0));
+
+    const hasSeparateAudio = audioFormats && audioFormats.length > 0;
+    console.log(`🎵 Platform: ${detectPlatform(videoUrl)}, Separate audio available: ${hasSeparateAudio}`);
+
+    // Add video formats with intelligent audio handling
     const videoQualities = [
       { quality: '1080p', height: 1080 },
       { quality: '720p', height: 720 },
@@ -257,34 +311,63 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     ];
 
     videoQualities.forEach(({ quality, height }) => {
-      const format = info.formats?.find((f: any) =>
-        f.height === height && f.vcodec !== 'none' && f.vcodec !== null
+      // Strategy 1: Look for combined video+audio formats first (ideal)
+      let format = info.formats?.find((f: any) =>
+        f.height === height && f.vcodec !== 'none' && f.vcodec !== null &&
+        f.acodec !== 'none' && f.acodec !== null
       );
+
+      let hasAudio = false;
+      let canMergeAudio = false;
+
+      if (format) {
+        // Found combined format with audio
+        hasAudio = true;
+        canMergeAudio = false; // No merging needed
+        console.log(`✅ ${quality}: Combined format with audio`);
+      } else {
+        // Strategy 2: Look for video-only format that can be merged with audio
+        format = info.formats?.find((f: any) =>
+          f.height === height && f.vcodec !== 'none' && f.vcodec !== null
+        );
+
+        if (format && hasSeparateAudio) {
+          // Video-only format available + separate audio available = can merge
+          hasAudio = false; // Format itself has no audio
+          canMergeAudio = true; // But we can merge audio during download
+          console.log(`🎵 ${quality}: Video-only format, audio will be merged during download`);
+        } else if (format) {
+          // Video-only format but no separate audio available
+          hasAudio = false;
+          canMergeAudio = false;
+          console.log(`⚠️ ${quality}: Video-only format, no audio available for merging`);
+        }
+      }
+
       if (format) {
         formats.push({
           quality,
           format: 'mp4',
           url: format.url,
           filesize: format.filesize,
-          hasAudio: format.acodec !== 'none' && format.acodec !== null
+          hasAudio,
+          canMergeAudio
         });
       }
     });
 
-    // Add best audio format
-    const audioFormats = info.formats?.filter((f: any) =>
-      f.acodec !== 'none' && f.acodec !== null && (f.vcodec === 'none' || f.vcodec === null)
-    ).sort((a: any, b: any) => (b.abr || 0) - (a.abr || 0));
-
-    if (audioFormats && audioFormats.length > 0) {
+    // Add audio-only format if available
+    if (hasSeparateAudio && audioFormats.length > 0) {
       const bestAudio = audioFormats[0];
       formats.push({
         quality: 'Audio Only',
         format: 'mp3',
         url: bestAudio.url,
         filesize: bestAudio.filesize,
-        hasAudio: true
+        hasAudio: true,
+        canMergeAudio: false // Already audio-only
       });
+      console.log(`🎵 Audio-only format added: ${bestAudio.abr || 'unknown'}kbps`);
     }
 
     // If no formats found, try to get the best format available
@@ -294,7 +377,8 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
         format: info.ext || 'mp4',
         url: info.url,
         filesize: info.filesize,
-        hasAudio: true
+        hasAudio: true,
+        canMergeAudio: false // Single format, no merging needed
       });
     }
 
@@ -322,17 +406,33 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     // Prefer informative stderr to generic message
     const msg = stderr?.trim() || error.message || 'Unknown yt-dlp error';
 
-    // Enhanced error messages for production debugging
+    // Enhanced platform-specific error messages for production debugging
+    const platform = detectPlatform(videoUrl);
+
     if (error.message.includes('yt-dlp not found')) {
       throw new Error('Video extraction service unavailable: yt-dlp binary not installed');
     } else if (error.message.includes('timeout')) {
-      throw new Error('Video extraction timeout: The video may be too large or service busy');
+      throw new Error(`${platform === 'vimeo' ? 'Vimeo' : 'YouTube'} extraction timeout: The video may be too large or service busy`);
     } else if (error.message.includes('ENOTFOUND') || error.message.includes('network')) {
-      throw new Error('Network error: Unable to connect to video service');
+      throw new Error(`Network error: Unable to connect to ${platform === 'vimeo' ? 'Vimeo' : 'YouTube'} service`);
     } else if (error.message.includes('Invalid JSON')) {
       throw new Error('Video processing error: Invalid response from extraction service');
+    } else if (platform === 'vimeo' && (msg.includes('private') || msg.includes('password') || msg.includes('requires a password'))) {
+      throw new Error('This Vimeo video is private or password-protected. Please try a public Vimeo video.');
+    } else if (platform === 'vimeo' && msg.includes('Premium membership required')) {
+      throw new Error('This Vimeo video requires a Premium membership. Please try a free Vimeo video.');
+    } else if (platform === 'youtube' && msg.includes('Sign in to confirm')) {
+      throw new Error('YouTube detected automated access. Please try again later or use a different video.');
+    } else if (platform === 'youtube' && msg.includes('Video unavailable')) {
+      throw new Error('This YouTube video is unavailable in your region or has been removed.');
+    } else if (platform === 'vimeo' && msg.includes('404')) {
+      throw new Error('Vimeo video not found. Please check the URL and try again.');
+    } else if (platform === 'youtube' && msg.includes('age-restricted')) {
+      throw new Error('This YouTube video is age-restricted and cannot be downloaded.');
     } else {
-      throw new Error(msg);
+      // Generic error with platform context
+      const platformName = platform === 'vimeo' ? 'Vimeo' : 'YouTube';
+      throw new Error(`${platformName} extraction failed: ${msg}`);
     }
   }
 }
