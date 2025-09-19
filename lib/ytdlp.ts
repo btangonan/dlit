@@ -2,6 +2,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import { LRUCache } from 'lru-cache';
 import { safeExecute } from './safeExec';
+import BrowserCookieExtractor from './cookieExtractor';
 import { assertAllowedUrl, sanitizeUrlForLogging } from './urls';
 
 // Cache extracted URLs for 5 minutes to avoid re-extraction
@@ -17,11 +18,21 @@ const COOKIE_FILE_PATH = path.join(process.cwd(), 'cookies.txt');
 
 async function ensureCookieFile(): Promise<string | null> {
   try {
+    // First try to extract fresh cookies from browsers
+    const cookieExtractor = new BrowserCookieExtractor();
+    const extractedCookieFile = await cookieExtractor.extractVimeoCookies();
+
+    if (extractedCookieFile) {
+      console.log('🍪 Using fresh browser cookies for authentication');
+      return extractedCookieFile;
+    }
+
+    // Fallback: check for existing static cookie file
     await fs.access(COOKIE_FILE_PATH);
-    console.log('🍪 Using existing cookie file for authentication');
+    console.log('🍪 Using existing static cookie file for authentication');
     return COOKIE_FILE_PATH;
   } catch (error) {
-    // Cookie file doesn't exist - we'll create a minimal one
+    // Create minimal YouTube cookies for bot evasion
     const minimalCookies = `# Netscape HTTP Cookie File
 # This is a generated file! Do not edit.
 
@@ -32,7 +43,7 @@ async function ensureCookieFile(): Promise<string | null> {
 
     try {
       await fs.writeFile(COOKIE_FILE_PATH, minimalCookies, 'utf8');
-      console.log('🍪 Created minimal cookie file for bot evasion');
+      console.log('🍪 Created minimal cookie file for YouTube bot evasion');
       return COOKIE_FILE_PATH;
     } catch (writeError) {
       console.log('⚠️ Could not create cookie file, proceeding without cookies');
@@ -123,26 +134,124 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
     let extractionSuccessful = false;
 
     if (platform === 'vimeo') {
-      // Vimeo extraction strategy - simpler approach, no mobile clients needed
+      // Enhanced Vimeo extraction strategy with browser impersonation
       try {
-        console.log('🎯 Trying Vimeo standard extraction...');
-        const result = await safeExecute(
-          ytdlpPath,
-          ['-j', '--no-warnings', validatedUrl.href],
-          {
-            maxBuffer: 50 * 1024 * 1024,
-            timeout: 30000
+        console.log('🎯 Trying enhanced Vimeo extraction with multiple strategies...');
+
+        // Get cookie file from browser extraction
+        const cookieFile = await ensureCookieFile();
+        let extractionAttempted = false;
+
+        // Strategy 1: Browser impersonation with cookies (most effective)
+        if (cookieFile) {
+          const impersonationTargets = [
+            'Chrome-131',     // Latest Chrome
+            'Chrome-120',     // Stable Chrome
+            'Safari-18.0',    // Latest Safari
+            'Firefox-135'     // Latest Firefox
+          ];
+
+          for (const target of impersonationTargets) {
+            try {
+              console.log(`🎭 Trying Vimeo with ${target} impersonation + cookies...`);
+              const result = await safeExecute(
+                ytdlpPath,
+                ['-j', '--no-warnings', '--impersonate', target, '--cookies', cookieFile, validatedUrl.href],
+                {
+                  maxBuffer: 50 * 1024 * 1024,
+                  timeout: 45000
+                }
+              );
+              stdout = result.stdout;
+              stderr = result.stderr;
+              extractionAttempted = true;
+              extractionSuccessful = true;
+              console.log(`✅ Vimeo extraction with ${target} impersonation successful`);
+              break;
+            } catch (impersonationError: any) {
+              console.log(`🎭 ${target} impersonation failed, trying next...`);
+              continue;
+            }
           }
-        );
-        stdout = result.stdout;
-        stderr = result.stderr;
-        extractionSuccessful = true;
-        console.log('✅ Vimeo extraction successful');
+
+          // Strategy 2: Fallback to cookies without impersonation
+          if (!extractionAttempted) {
+            try {
+              console.log('🍪 Trying Vimeo with browser cookies (no impersonation)...');
+              const result = await safeExecute(
+                ytdlpPath,
+                ['-j', '--no-warnings', '--cookies', cookieFile, validatedUrl.href],
+                {
+                  maxBuffer: 50 * 1024 * 1024,
+                  timeout: 30000
+                }
+              );
+              stdout = result.stdout;
+              stderr = result.stderr;
+              extractionAttempted = true;
+              extractionSuccessful = true;
+              console.log('✅ Vimeo extraction with cookies successful');
+            } catch (cookieError: any) {
+              console.log('🍪 Vimeo cookie extraction failed, trying impersonation without cookies...');
+            }
+          }
+        }
+
+        // Strategy 3: Browser impersonation without cookies
+        if (!extractionAttempted) {
+          const impersonationTargets = ['Chrome-131', 'Safari-18.0', 'Firefox-135'];
+
+          for (const target of impersonationTargets) {
+            try {
+              console.log(`🎭 Trying Vimeo with ${target} impersonation (no cookies)...`);
+              const result = await safeExecute(
+                ytdlpPath,
+                ['-j', '--no-warnings', '--impersonate', target, validatedUrl.href],
+                {
+                  maxBuffer: 50 * 1024 * 1024,
+                  timeout: 30000
+                }
+              );
+              stdout = result.stdout;
+              stderr = result.stderr;
+              extractionAttempted = true;
+              extractionSuccessful = true;
+              console.log(`✅ Vimeo extraction with ${target} impersonation successful`);
+              break;
+            } catch (impersonationError: any) {
+              console.log(`🎭 ${target} impersonation failed, trying next...`);
+              continue;
+            }
+          }
+        }
+
+        // Strategy 4: Last resort - standard extraction
+        if (!extractionAttempted) {
+          console.log('🎯 Trying Vimeo standard extraction as last resort...');
+          const result = await safeExecute(
+            ytdlpPath,
+            ['-j', '--no-warnings', validatedUrl.href],
+            {
+              maxBuffer: 50 * 1024 * 1024,
+              timeout: 30000
+            }
+          );
+          stdout = result.stdout;
+          stderr = result.stderr;
+          extractionSuccessful = true;
+          console.log('✅ Vimeo standard extraction successful');
+        }
       } catch (vimeoError: any) {
-        // If standard fails, try with referer for private videos
-        if (vimeoError.stderr && (vimeoError.stderr.includes('private') || vimeoError.stderr.includes('password'))) {
-          console.log('🔒 Private Vimeo content detected - not supported without authentication');
-          throw new Error('This Vimeo video is private and requires authentication. Please try a public Vimeo video.');
+        // Enhanced error detection for Vimeo authentication requirements
+        const errorStr = (vimeoError.stderr || '') + (vimeoError.message || '');
+        if (errorStr.includes('private') ||
+            errorStr.includes('password') ||
+            errorStr.includes('logged-in') ||
+            errorStr.includes('login') ||
+            errorStr.includes('authentication') ||
+            errorStr.includes('web client only works when logged-in')) {
+          console.log('🔒 Vimeo requires authentication');
+          throw new Error('This Vimeo video requires authentication. Please log into Vimeo in your browser first, then try again. The app will use your browser cookies for access.');
         } else {
           throw vimeoError;
         }
@@ -417,8 +526,8 @@ export async function getVideoInfo(videoUrl: string): Promise<VideoInfo> {
       throw new Error(`Network error: Unable to connect to ${platform === 'vimeo' ? 'Vimeo' : 'YouTube'} service`);
     } else if (error.message.includes('Invalid JSON')) {
       throw new Error('Video processing error: Invalid response from extraction service');
-    } else if (platform === 'vimeo' && (msg.includes('private') || msg.includes('password') || msg.includes('requires a password'))) {
-      throw new Error('This Vimeo video is private or password-protected. Please try a public Vimeo video.');
+    } else if (platform === 'vimeo' && (msg.includes('private') || msg.includes('password') || msg.includes('requires a password') || msg.includes('logged-in') || msg.includes('login') || msg.includes('authentication') || msg.includes('web client only works when logged-in'))) {
+      throw new Error('This Vimeo video requires authentication. Vimeo now requires login for most videos. Please try YouTube instead, or ensure browser cookies are available.');
     } else if (platform === 'vimeo' && msg.includes('Premium membership required')) {
       throw new Error('This Vimeo video requires a Premium membership. Please try a free Vimeo video.');
     } else if (platform === 'youtube' && msg.includes('Sign in to confirm')) {
