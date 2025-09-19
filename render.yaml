@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: video-downloader
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /api/health
