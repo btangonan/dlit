@@ -10,7 +10,7 @@
     "build-electron": "next build && electron-builder",
     "dist": "electron-builder"
   },
-  "main": "electron/main.js",
+  "main": "server.js",
   "dependencies": {
     "@types/jsonwebtoken": "^9.0.0",
     "@types/node": "^20.0.0",
