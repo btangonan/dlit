@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 
 const { spawn } = require('child_process');
+const path = require('path');
 
-console.log('🚀 Starting Next.js production server...');
+console.log('🚀 [server.js] Starting Next.js production server...');
+console.log('📁 [server.js] Working directory:', process.cwd());
+console.log('📋 [server.js] Node version:', process.version);
 
 // Start Next.js using npm start
 const nextProcess = spawn('npm', ['start'], {
   stdio: 'inherit',
-  env: process.env
+  env: process.env,
+  cwd: process.cwd()
 });
 
 // Handle process events

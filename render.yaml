@@ -1,7 +1,7 @@
 services:
   - type: web
     name: video-downloader
-    runtime: node
+    env: node
     plan: free
     buildCommand: |
       echo "🚀 Starting production build with comprehensive yt-dlp installation..."
