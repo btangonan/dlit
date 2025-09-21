@@ -42,7 +42,7 @@ services:
 
       echo "✅ Build completed!"
 
-    startCommand: npm start
+    startCommand: node server.js
     envVars:
       - key: JWT_SECRET
         generateValue: true
