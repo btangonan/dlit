@@ -9,7 +9,7 @@
         "--client-type",
         "persistent",
         "--data-dir",
-        "/Users/bradleytangonan/Desktop/my apps/test/.chroma"
+        "/Users/bradleytangonan/Desktop/my apps/dlit/.chroma"
       ],
       "env": {
         "ANONYMIZED_TELEMETRY": "FALSE",
